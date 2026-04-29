@@ -119,11 +119,22 @@ describe('NodelessCallbackController', () => {
       expect(res.send).to.have.been.calledWith('{"status":"error","message":"Malformed body"}')
     })
 
-    it('returns 403 when callback signature is invalid', async () => {
+    it('returns 400 when callback signature has invalid format', async () => {
       const { controller, paymentsService } = makeController()
       const res = makeRes()
 
       await controller.handleRequest(makeReq({ signature: 'invalid-signature' }), res)
+
+      expect(res.status).to.have.been.calledWith(400)
+      expect(res.send).to.have.been.calledWith('{"status":"error","message":"Invalid signature"}')
+      expect(paymentsService.updateInvoiceStatus).to.not.have.been.called
+    })
+
+    it('returns 403 when callback signature does not match', async () => {
+      const { controller, paymentsService } = makeController()
+      const res = makeRes()
+
+      await controller.handleRequest(makeReq({ signature: 'b'.repeat(64) }), res)
 
       expect(res.status).to.have.been.calledWith(403)
       expect(res.send).to.have.been.calledWith('Forbidden')
