@@ -5,7 +5,6 @@ import { Request, Response } from 'express'
 
 import { Invoice, InvoiceStatus } from '../../@types/invoice'
 import { createLogger } from '../../factories/logger-factory'
-import { createSettings } from '../../factories/settings-factory'
 import { fromNodelessInvoice } from '../../utils/transform'
 import { hmacSha256 } from '../../utils/secret'
 import { IController } from '../../@types/controllers'
@@ -57,15 +56,6 @@ export class NodelessCallbackController implements IController {
 
     if (!timingSafeEqual(expectedBuf, actualBuf)) {
       logger.error('nodeless callback request rejected: signature mismatch')
-      response.status(403).send('Forbidden')
-      return
-    }
-
-    const settings = createSettings()
-    const paymentProcessor = settings.payments?.processor
-
-    if (paymentProcessor !== 'nodeless') {
-      logger('denied request to /callbacks/nodeless which is not the current payment processor')
       response.status(403).send('Forbidden')
       return
     }
