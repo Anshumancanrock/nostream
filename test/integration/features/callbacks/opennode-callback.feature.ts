@@ -36,6 +36,7 @@ Given('OpenNode callback processing is enabled', function () {
     ...settings,
     payments: {
       ...(settings?.payments ?? {}),
+      enabled: true,
       processor: 'opennode',
     },
   }
