@@ -1,7 +1,6 @@
 import { IncomingMessage } from 'http'
-
-import { createLogger } from '../factories/logger-factory'
 import { Settings } from '../@types/settings'
+import { createLogger } from '../factories/logger-factory'
 
 const logger = createLogger('http-utils')
 
@@ -45,19 +44,18 @@ export const getRemoteAddress = (request: IncomingMessage, settings: Settings): 
 
   const trustedProxies = settings.network?.trustedProxies
   if (header && (!Array.isArray(trustedProxies) || trustedProxies.length === 0)) {
-    logger.warn('WARNING: network.remoteIpHeader is set but network.trustedProxies is empty. Forwarded headers will be ignored. Add your proxy IP to network.trustedProxies.')
+    logger.warn(
+      'WARNING: network.remoteIpHeader is set but network.trustedProxies is empty. Forwarded headers will be ignored. Add your proxy IP to network.trustedProxies.',
+    )
   }
 
   const rawHeaderAddress = header ? request.headers[header] : undefined
   const headerAddress = Array.isArray(rawHeaderAddress) ? rawHeaderAddress[0] : rawHeaderAddress
   const socketAddress = request.socket.remoteAddress
 
-  const trustedProxy = typeof socketAddress === 'string'
-    && isTrustedProxy(socketAddress, settings)
+  const trustedProxy = typeof socketAddress === 'string' && isTrustedProxy(socketAddress, settings)
 
-  const result = trustedProxy && typeof headerAddress === 'string'
-    ? headerAddress
-    : socketAddress
+  const result = trustedProxy && typeof headerAddress === 'string' ? headerAddress : socketAddress
 
   return (result as string).split(',')[0].trim()
 }
@@ -133,4 +131,49 @@ export const joinPathPrefix = (prefix: string, path: string): string => {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
 
   return `${normalizedPrefix}${normalizedPath}`
+}
+
+/**
+ * Absolute URL for the incoming HTTP request (scheme + host + path + query).
+ * Used for NIP-98 `u` tag matching. Incorporates the public path prefix when present.
+ *
+ * Scheme prefers `info.relay_url` (wss→https, ws→http) so auth matches the public
+ * URL clients sign, even when TLS terminates at a proxy and `req.secure` is false.
+ */
+export const getAbsoluteHttpRequestUrl = (
+  request: IncomingMessage & { originalUrl?: string; get?: (name: string) => string | undefined },
+  settings: Settings,
+): string | undefined => {
+  const host = typeof request.get === 'function' ? request.get('host') : undefined
+  if (!host) {
+    return undefined
+  }
+
+  const originalUrl = typeof request.originalUrl === 'string' ? request.originalUrl : '/'
+  const prefix = getPublicPathPrefix(request, settings)
+  const pathAndQuery =
+    !prefix || originalUrl === prefix || originalUrl.startsWith(`${prefix}/`) || originalUrl.startsWith(`${prefix}?`)
+      ? originalUrl
+      : joinPathPrefix(prefix, originalUrl)
+
+  return `${getPublicHttpScheme(request, settings)}://${host}${pathAndQuery}`
+}
+
+const getPublicHttpScheme = (request: IncomingMessage, settings: Settings): 'http' | 'https' => {
+  try {
+    const relayUrl = settings.info?.relay_url
+    if (typeof relayUrl === 'string' && relayUrl.length > 0) {
+      const protocol = new URL(relayUrl).protocol
+      if (protocol === 'wss:' || protocol === 'https:') {
+        return 'https'
+      }
+      if (protocol === 'ws:' || protocol === 'http:') {
+        return 'http'
+      }
+    }
+  } catch {
+    // fall through to request-derived scheme
+  }
+
+  return isSecureRequest(request, settings) ? 'https' : 'http'
 }

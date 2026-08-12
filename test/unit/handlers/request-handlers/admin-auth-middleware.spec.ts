@@ -1,0 +1,286 @@
+import chai from 'chai'
+import Sinon from 'sinon'
+import sinonChai from 'sinon-chai'
+import { Tag } from '../../../../src/@types/base'
+import { PasswordAdminAuthProvider } from '../../../../src/admin/password-admin-auth-provider'
+import { EventKinds, EventTags } from '../../../../src/constants/base'
+import * as settingsFactory from '../../../../src/factories/settings-factory'
+import {
+  adminAuthGateMiddleware,
+  adminAuthMiddleware,
+} from '../../../../src/handlers/request-handlers/admin-auth-middleware'
+import { AdminRequest } from '../../../../src/handlers/request-handlers/admin-json-body-middleware'
+import { getPublicKey, identifyEvent, signEvent } from '../../../../src/utils/event'
+import { hashNip98Payload } from '../../../../src/utils/nip98'
+
+chai.use(sinonChai)
+
+const { expect } = chai
+
+describe('adminAuthMiddleware', () => {
+  const privkey = 'a'.repeat(64)
+  const pubkey = getPublicKey(privkey)
+  const stranger = 'b'.repeat(64)
+  const now = 1_700_000_000
+  // relay_url is wss → public HTTP scheme becomes https
+  const url = 'https://relay.example.com/admin/settings'
+
+  let sandbox: Sinon.SinonSandbox
+  let isRequestAuthenticated: Sinon.SinonStub
+  let next: Sinon.SinonStub
+  let response: {
+    status: Sinon.SinonStub
+    setHeader: Sinon.SinonStub
+    send: Sinon.SinonStub
+  }
+
+  beforeEach(() => {
+    sandbox = Sinon.createSandbox()
+    isRequestAuthenticated = sandbox.stub(PasswordAdminAuthProvider.prototype, 'isRequestAuthenticated').returns(false)
+    next = sandbox.stub()
+    response = {
+      status: sandbox.stub().returnsThis(),
+      setHeader: sandbox.stub().returnsThis(),
+      send: sandbox.stub().returnsThis(),
+    }
+  })
+
+  afterEach(() => {
+    sandbox.restore()
+  })
+
+  const mockRequest = (overrides: Partial<AdminRequest> & { headers?: Record<string, string> } = {}): AdminRequest => {
+    const headers = overrides.headers ?? {}
+    return {
+      method: 'GET',
+      originalUrl: '/admin/settings',
+      headers,
+      get: (name: string) => {
+        if (name.toLowerCase() === 'host') {
+          return 'relay.example.com'
+        }
+        return headers[name]
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+      ...overrides,
+    } as any
+  }
+
+  async function createAuthHeader(
+    overrides: { url?: string; method?: string; payload?: string; created_at?: number } = {},
+  ): Promise<string> {
+    const tags: Tag[] = [
+      [EventTags.Url, overrides.url ?? url],
+      [EventTags.Method, overrides.method ?? 'GET'],
+    ]
+    if (overrides.payload !== undefined) {
+      tags.push([EventTags.Payload, overrides.payload])
+    }
+
+    const identified = await identifyEvent({
+      pubkey,
+      created_at: overrides.created_at ?? now,
+      kind: EventKinds.HTTP_AUTH,
+      tags,
+      content: '',
+    })
+    const signed = await signEvent(privkey)(identified)
+    return `Nostr ${Buffer.from(JSON.stringify(signed), 'utf8').toString('base64')}`
+  }
+
+  const enableNip98 = (allowedPubkeys: string[] = [pubkey]) => {
+    sandbox.stub(settingsFactory, 'createSettings').returns({
+      info: { relay_url: 'wss://relay.example.com' },
+      network: {},
+      admin: {
+        enabled: true,
+        nip98: {
+          enabled: true,
+          allowedPubkeys,
+          maxSkewSeconds: 60,
+        },
+      },
+    } as any)
+  }
+
+  describe('adminAuthGateMiddleware', () => {
+    it('continues for session-authenticated requests', () => {
+      isRequestAuthenticated.returns(true)
+      const request = mockRequest()
+
+      adminAuthGateMiddleware(request, response as any, next)
+
+      expect(next).to.have.been.calledOnce
+      expect(response.status).not.to.have.been.called
+    })
+
+    it('rejects anonymous requests before body parsing when NIP-98 is off', () => {
+      sandbox.stub(settingsFactory, 'createSettings').returns({
+        info: { relay_url: 'wss://relay.example.com' },
+        network: {},
+        admin: { enabled: true, nip98: { enabled: false } },
+      } as any)
+
+      adminAuthGateMiddleware(mockRequest(), response as any, next)
+
+      expect(next).not.to.have.been.called
+      expect(response.status).to.have.been.calledWith(401)
+    })
+
+    it('allows Nostr Authorization candidates through when NIP-98 is enabled', async () => {
+      enableNip98()
+
+      adminAuthGateMiddleware(
+        mockRequest({ headers: { authorization: await createAuthHeader() } }),
+        response as any,
+        next,
+      )
+
+      expect(next).to.have.been.calledOnce
+      expect(response.status).not.to.have.been.called
+    })
+  })
+
+  it('allows cookie/session authenticated requests without NIP-98', async () => {
+    isRequestAuthenticated.returns(true)
+    const request = mockRequest()
+
+    await adminAuthMiddleware(request, response as any, next)
+
+    expect(next).to.have.been.calledOnce
+    expect(response.status).not.to.have.been.called
+  })
+
+  it('rejects unauthenticated requests when NIP-98 is disabled', async () => {
+    sandbox.stub(settingsFactory, 'createSettings').returns({
+      info: { relay_url: 'wss://relay.example.com' },
+      network: {},
+      admin: { enabled: true, nip98: { enabled: false, allowedPubkeys: [pubkey] } },
+    } as any)
+
+    await adminAuthMiddleware(
+      mockRequest({ headers: { authorization: await createAuthHeader() } }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+
+  it('accepts a valid allowlisted NIP-98 Authorization header', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+
+    await adminAuthMiddleware(
+      mockRequest({
+        headers: { authorization: await createAuthHeader() },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).to.have.been.calledOnce
+    expect(response.status).not.to.have.been.called
+  })
+
+  it('rejects a valid NIP-98 event from a non-allowlisted pubkey', async () => {
+    enableNip98([stranger])
+    sandbox.stub(Date, 'now').returns(now * 1000)
+
+    await adminAuthMiddleware(
+      mockRequest({
+        headers: { authorization: await createAuthHeader() },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+
+  it('rejects when allowlist is empty even if NIP-98 is enabled', async () => {
+    enableNip98([])
+    sandbox.stub(Date, 'now').returns(now * 1000)
+
+    await adminAuthMiddleware(
+      mockRequest({
+        headers: { authorization: await createAuthHeader() },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+
+  it('verifies payload hash for PATCH bodies using rawBody', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    const body = '{"path":"info.name","value":"relay"}'
+    const authorization = await createAuthHeader({
+      method: 'PATCH',
+      payload: hashNip98Payload(body),
+    })
+
+    await adminAuthMiddleware(
+      mockRequest({
+        method: 'PATCH',
+        headers: { authorization },
+        rawBody: Buffer.from(body, 'utf8'),
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).to.have.been.calledOnce
+  })
+
+  it('rejects PATCH with a body when rawBody was not captured', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    const body = '{"path":"info.name","value":"relay"}'
+    const authorization = await createAuthHeader({
+      method: 'PATCH',
+      payload: hashNip98Payload(body),
+    })
+
+    await adminAuthMiddleware(
+      mockRequest({
+        method: 'PATCH',
+        headers: {
+          authorization,
+          'content-length': String(Buffer.byteLength(body)),
+        },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+
+  it('rejects PATCH with chunked transfer-encoding when rawBody was not captured', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    const authorization = await createAuthHeader({ method: 'PATCH' })
+
+    await adminAuthMiddleware(
+      mockRequest({
+        method: 'PATCH',
+        headers: {
+          authorization,
+          'transfer-encoding': 'chunked',
+        },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+})
