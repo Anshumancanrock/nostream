@@ -104,33 +104,34 @@ describe('adminAuthMiddleware', () => {
   }
 
   describe('adminAuthGateMiddleware', () => {
-    it('continues for session-authenticated requests', () => {
+    it('continues for session-authenticated requests', async () => {
       isRequestAuthenticated.returns(true)
       const request = mockRequest()
 
-      adminAuthGateMiddleware(request, response as any, next)
+      await adminAuthGateMiddleware(request, response as any, next)
 
       expect(next).to.have.been.calledOnce
       expect(response.status).not.to.have.been.called
     })
 
-    it('rejects anonymous requests before body parsing when NIP-98 is off', () => {
+    it('rejects anonymous requests before body parsing when NIP-98 is off', async () => {
       sandbox.stub(settingsFactory, 'createSettings').returns({
         info: { relay_url: 'wss://relay.example.com' },
         network: {},
         admin: { enabled: true, nip98: { enabled: false } },
       } as any)
 
-      adminAuthGateMiddleware(mockRequest(), response as any, next)
+      await adminAuthGateMiddleware(mockRequest(), response as any, next)
 
       expect(next).not.to.have.been.called
       expect(response.status).to.have.been.calledWith(401)
     })
 
-    it('allows Nostr Authorization candidates through when NIP-98 is enabled', async () => {
+    it('allows a cryptographically valid allowlisted NIP-98 header through', async () => {
       enableNip98()
+      sandbox.stub(Date, 'now').returns(now * 1000)
 
-      adminAuthGateMiddleware(
+      await adminAuthGateMiddleware(
         mockRequest({ headers: { authorization: await createAuthHeader() } }),
         response as any,
         next,
@@ -138,6 +139,37 @@ describe('adminAuthMiddleware', () => {
 
       expect(next).to.have.been.calledOnce
       expect(response.status).not.to.have.been.called
+    })
+
+    it('rejects junk Nostr Authorization before body parsing', async () => {
+      enableNip98()
+
+      await adminAuthGateMiddleware(
+        mockRequest({ headers: { authorization: 'Nostr not-valid-base64!!!' } }),
+        response as any,
+        next,
+      )
+
+      expect(next).not.to.have.been.called
+      expect(response.status).to.have.been.calledWith(401)
+    })
+
+    it('rejects Host-spoofed URLs because host is pinned to relay_url', async () => {
+      enableNip98()
+      sandbox.stub(Date, 'now').returns(now * 1000)
+      const authorization = await createAuthHeader({ url: 'https://evil.example/admin/settings' })
+
+      await adminAuthGateMiddleware(
+        mockRequest({
+          headers: { authorization },
+          get: (name: string) => (name.toLowerCase() === 'host' ? 'evil.example' : undefined),
+        } as any),
+        response as any,
+        next,
+      )
+
+      expect(next).not.to.have.been.called
+      expect(response.status).to.have.been.calledWith(401)
     })
   })
 

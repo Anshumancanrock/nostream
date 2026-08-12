@@ -137,14 +137,14 @@ export const joinPathPrefix = (prefix: string, path: string): string => {
  * Absolute URL for the incoming HTTP request (scheme + host + path + query).
  * Used for NIP-98 `u` tag matching. Incorporates the public path prefix when present.
  *
- * Scheme prefers `info.relay_url` (wss→https, ws→http) so auth matches the public
- * URL clients sign, even when TLS terminates at a proxy and `req.secure` is false.
+ * Scheme and host both come from `info.relay_url` (wss→https, ws→http) so auth
+ * binds to the configured public URL — never to the client-controlled Host header.
  */
 export const getAbsoluteHttpRequestUrl = (
   request: IncomingMessage & { originalUrl?: string; get?: (name: string) => string | undefined },
   settings: Settings,
 ): string | undefined => {
-  const host = typeof request.get === 'function' ? request.get('host') : undefined
+  const host = getPublicHttpHost(settings)
   if (!host) {
     return undefined
   }
@@ -157,6 +157,23 @@ export const getAbsoluteHttpRequestUrl = (
       : joinPathPrefix(prefix, originalUrl)
 
   return `${getPublicHttpScheme(request, settings)}://${host}${pathAndQuery}`
+}
+
+/** Public hostname[:port] from `info.relay_url`. Never trusts request Host. */
+const getPublicHttpHost = (settings: Settings): string | undefined => {
+  try {
+    const relayUrl = settings.info?.relay_url
+    if (typeof relayUrl === 'string' && relayUrl.length > 0) {
+      const { host } = new URL(relayUrl)
+      if (host.length > 0) {
+        return host
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  return undefined
 }
 
 const getPublicHttpScheme = (request: IncomingMessage, settings: Settings): 'http' | 'https' => {

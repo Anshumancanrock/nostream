@@ -1,4 +1,4 @@
-import express, { Router } from 'express'
+import express, { json, Router } from 'express'
 
 import { createGetAdminHealthController } from '../../factories/controllers/get-admin-health-controller-factory'
 import { createGetAdminMetricsController } from '../../factories/controllers/get-admin-metrics-controller-factory'
@@ -34,7 +34,8 @@ router.get('/dashboard', getAdminDashboardRequestHandler)
 router.post(
   '/login',
   adminLoginRateLimitMiddleware,
-  adminJsonBodyMiddleware,
+  // Keep the default Express JSON ceiling — login does not need NIP-98 rawBody capture.
+  json({ limit: '100kb' }),
   withAdminController(createPostAdminLoginController),
 )
 router.post('/logout', adminRateLimitMiddleware, withAdminController(createPostAdminLogoutController))

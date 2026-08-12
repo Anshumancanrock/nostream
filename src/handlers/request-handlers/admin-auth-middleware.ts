@@ -5,7 +5,7 @@ import { createAdminAuthProvider } from '../../factories/admin-auth-provider-fac
 import { createLogger } from '../../factories/logger-factory'
 import { createSettings } from '../../factories/settings-factory'
 import { getAbsoluteHttpRequestUrl } from '../../utils/http'
-import { verifyNip98Auth } from '../../utils/nip98'
+import { DEFAULT_NIP98_MAX_AUTHORIZATION_HEADER_LENGTH, verifyNip98Auth } from '../../utils/nip98'
 import { AdminRequest } from './admin-json-body-middleware'
 
 const logger = createLogger('admin-auth-middleware')
@@ -63,23 +63,61 @@ const sendUnauthorized = (response: Response): void => {
 }
 
 /**
- * Reject unauthenticated non-Nostr requests before the JSON body parser runs.
- * Session-authenticated and NIP-98 candidates are allowed through to body parsing.
+ * Reject unauthenticated requests before the JSON body parser runs.
+ * Session-authenticated callers pass through. NIP-98 callers are cryptographically
+ * verified (except payload binding, which needs raw body bytes) and allowlisted here
+ * so junk `Authorization: Nostr` headers never reach JSON parse.
  */
-export const adminAuthGateMiddleware = (request: AdminRequest, response: Response, next: NextFunction) => {
+export const adminAuthGateMiddleware = async (request: AdminRequest, response: Response, next: NextFunction) => {
   try {
     if (adminAuthProvider.isRequestAuthenticated(request)) {
       next()
       return
     }
 
-    const nip98Enabled = createSettings().admin?.nip98?.enabled === true
-    if (nip98Enabled && isNostrAuthorizationHeader(request.headers.authorization)) {
-      next()
+    const settings = createSettings()
+    const nip98Settings = settings.admin?.nip98
+    const authorizationHeader = request.headers.authorization
+
+    if (nip98Settings?.enabled !== true || !isNostrAuthorizationHeader(authorizationHeader)) {
+      sendUnauthorized(response)
       return
     }
 
-    sendUnauthorized(response)
+    if (authorizationHeader.length > DEFAULT_NIP98_MAX_AUTHORIZATION_HEADER_LENGTH) {
+      logger('rejecting NIP-98 auth gate: authorization header too large')
+      sendUnauthorized(response)
+      return
+    }
+
+    const absoluteUrl = getAbsoluteHttpRequestUrl(request, settings)
+    if (!absoluteUrl) {
+      logger('rejecting NIP-98 auth gate: unable to build absolute request URL')
+      sendUnauthorized(response)
+      return
+    }
+
+    // Body omitted on purpose — payload binding happens after adminJsonBodyMiddleware.
+    const result = await verifyNip98Auth({
+      authorizationHeader,
+      url: absoluteUrl,
+      method: request.method.toUpperCase(),
+      maxSkewSeconds: nip98Settings.maxSkewSeconds,
+    })
+
+    if (result.ok === false) {
+      logger('rejecting NIP-98 auth gate: %s', result.reason)
+      sendUnauthorized(response)
+      return
+    }
+
+    if (!isAllowedNip98Pubkey(result.pubkey, nip98Settings.allowedPubkeys)) {
+      logger('rejecting NIP-98 auth gate: pubkey %s is not allowlisted', result.pubkey)
+      sendUnauthorized(response)
+      return
+    }
+
+    next()
   } catch (error) {
     logger('admin auth gate error: %o', error)
     response.status(500).setHeader('content-type', 'application/json').send({ error: 'Internal Server Error' })
