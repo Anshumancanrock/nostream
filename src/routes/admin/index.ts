@@ -34,7 +34,6 @@ router.get('/dashboard', getAdminDashboardRequestHandler)
 router.post(
   '/login',
   adminLoginRateLimitMiddleware,
-  // Keep the default Express JSON ceiling — login does not need NIP-98 rawBody capture.
   json({ limit: '100kb' }),
   withAdminController(createPostAdminLoginController),
 )
@@ -76,7 +75,6 @@ router.get(
   withAdminController(createGetAdminSettingsSchemaController),
 )
 // codeql[js/missing-rate-limiting] - adminRateLimitMiddleware applies Redis-backed admin rate limits
-// Gate rejects anonymous non-Nostr callers before JSON parse; raw bytes kept for payload checks.
 router.patch(
   '/settings',
   adminRateLimitMiddleware,

@@ -5,12 +5,16 @@ import { createAdminAuthProvider } from '../../factories/admin-auth-provider-fac
 import { createLogger } from '../../factories/logger-factory'
 import { createSettings } from '../../factories/settings-factory'
 import { getAbsoluteHttpRequestUrl } from '../../utils/http'
-import { DEFAULT_NIP98_MAX_AUTHORIZATION_HEADER_LENGTH, verifyNip98Auth } from '../../utils/nip98'
+import {
+  DEFAULT_NIP98_MAX_AUTHORIZATION_HEADER_LENGTH,
+  DEFAULT_NIP98_MAX_SKEW_SECONDS,
+  verifyNip98Auth,
+} from '../../utils/nip98'
+import { claimNip98AuthEventId } from '../../utils/nip98-replay'
 import { AdminRequest } from './admin-json-body-middleware'
 
 const logger = createLogger('admin-auth-middleware')
 
-// Reuse one provider instance — factory construction is unnecessary per request.
 const adminAuthProvider: IAdminAuthProvider = createAdminAuthProvider()
 
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
@@ -41,9 +45,6 @@ const resolveBodyForNip98 = (request: AdminRequest): Buffer | undefined | 'missi
     return undefined
   }
 
-  // Mutating requests must have captured bytes when a body may be present.
-  // content-length>0 OR chunked TE without a captured rawBody is unsafe to treat as empty
-  // (payload binding would be skipped while a parser might still have consumed a body).
   const contentLength = Number(request.headers['content-length'] ?? '0')
   const transferEncodingHeader = request.headers['transfer-encoding']
   const transferEncoding = Array.isArray(transferEncodingHeader)
@@ -62,12 +63,14 @@ const sendUnauthorized = (response: Response): void => {
   response.status(401).setHeader('content-type', 'application/json').send({ error: 'Unauthorized' })
 }
 
-/**
- * Reject unauthenticated requests before the JSON body parser runs.
- * Session-authenticated callers pass through. NIP-98 callers are cryptographically
- * verified (except payload binding, which needs raw body bytes) and allowlisted here
- * so junk `Authorization: Nostr` headers never reach JSON parse.
- */
+const resolveReplayTtlSeconds = (maxSkewSeconds: number | undefined): number => {
+  if (typeof maxSkewSeconds === 'number' && Number.isSafeInteger(maxSkewSeconds) && maxSkewSeconds > 0) {
+    return maxSkewSeconds
+  }
+
+  return DEFAULT_NIP98_MAX_SKEW_SECONDS
+}
+
 export const adminAuthGateMiddleware = async (request: AdminRequest, response: Response, next: NextFunction) => {
   try {
     if (adminAuthProvider.isRequestAuthenticated(request)) {
@@ -97,7 +100,6 @@ export const adminAuthGateMiddleware = async (request: AdminRequest, response: R
       return
     }
 
-    // Body omitted on purpose — payload binding happens after adminJsonBodyMiddleware.
     const result = await verifyNip98Auth({
       authorizationHeader,
       url: absoluteUrl,
@@ -126,8 +128,6 @@ export const adminAuthGateMiddleware = async (request: AdminRequest, response: R
 
 export const adminAuthMiddleware = async (request: AdminRequest, response: Response, next: NextFunction) => {
   try {
-    // Always re-validate the session cryptographically. Do not trust a request flag
-    // (prototype-pollution resistant).
     if (adminAuthProvider.isRequestAuthenticated(request)) {
       next()
       return
@@ -177,6 +177,14 @@ export const adminAuthMiddleware = async (request: AdminRequest, response: Respo
       return
     }
 
+    const claim = await claimNip98AuthEventId(result.event.id, resolveReplayTtlSeconds(nip98Settings.maxSkewSeconds))
+    if (claim !== 'claimed') {
+      logger('rejecting NIP-98 auth: event %s replay protection result=%s', result.event.id, claim)
+      sendUnauthorized(response)
+      return
+    }
+
+    request.nip98Pubkey = result.pubkey
     next()
   } catch (error) {
     logger('admin auth middleware error: %o', error)

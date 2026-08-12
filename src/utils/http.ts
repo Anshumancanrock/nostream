@@ -134,11 +134,8 @@ export const joinPathPrefix = (prefix: string, path: string): string => {
 }
 
 /**
- * Absolute URL for the incoming HTTP request (scheme + host + path + query).
- * Used for NIP-98 `u` tag matching. Incorporates the public path prefix when present.
- *
- * Scheme and host both come from `info.relay_url` (wss→https, ws→http) so auth
- * binds to the configured public URL — never to the client-controlled Host header.
+ * Absolute URL for NIP-98 `u` matching (scheme + host + path + query).
+ * Scheme and host come from `info.relay_url`.
  */
 export const getAbsoluteHttpRequestUrl = (
   request: IncomingMessage & { originalUrl?: string; get?: (name: string) => string | undefined },
@@ -159,7 +156,6 @@ export const getAbsoluteHttpRequestUrl = (
   return `${getPublicHttpScheme(request, settings)}://${host}${pathAndQuery}`
 }
 
-/** Public hostname[:port] from `info.relay_url`. Never trusts request Host. */
 const getPublicHttpHost = (settings: Settings): string | undefined => {
   try {
     const relayUrl = settings.info?.relay_url

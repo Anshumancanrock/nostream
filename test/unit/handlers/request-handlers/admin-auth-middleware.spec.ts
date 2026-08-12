@@ -12,6 +12,7 @@ import {
 import { AdminRequest } from '../../../../src/handlers/request-handlers/admin-json-body-middleware'
 import { getPublicKey, identifyEvent, signEvent } from '../../../../src/utils/event'
 import { hashNip98Payload } from '../../../../src/utils/nip98'
+import * as nip98Replay from '../../../../src/utils/nip98-replay'
 
 chai.use(sinonChai)
 
@@ -27,6 +28,7 @@ describe('adminAuthMiddleware', () => {
 
   let sandbox: Sinon.SinonSandbox
   let isRequestAuthenticated: Sinon.SinonStub
+  let claimNip98AuthEventId: Sinon.SinonStub
   let next: Sinon.SinonStub
   let response: {
     status: Sinon.SinonStub
@@ -37,6 +39,7 @@ describe('adminAuthMiddleware', () => {
   beforeEach(() => {
     sandbox = Sinon.createSandbox()
     isRequestAuthenticated = sandbox.stub(PasswordAdminAuthProvider.prototype, 'isRequestAuthenticated').returns(false)
+    claimNip98AuthEventId = sandbox.stub(nip98Replay, 'claimNip98AuthEventId').resolves('claimed')
     next = sandbox.stub()
     response = {
       status: sandbox.stub().returnsThis(),
@@ -268,6 +271,65 @@ describe('adminAuthMiddleware', () => {
     )
 
     expect(next).to.have.been.calledOnce
+    expect(claimNip98AuthEventId).to.have.been.calledOnce
+  })
+
+  it('rejects PATCH when payload hash does not match rawBody', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    const body = '{"path":"info.name","value":"relay"}'
+    const authorization = await createAuthHeader({
+      method: 'PATCH',
+      payload: hashNip98Payload('{"path":"info.name","value":"other"}'),
+    })
+
+    await adminAuthMiddleware(
+      mockRequest({
+        method: 'PATCH',
+        headers: { authorization },
+        rawBody: Buffer.from(body, 'utf8'),
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+    expect(claimNip98AuthEventId).not.to.have.been.called
+  })
+
+  it('rejects replayed NIP-98 auth event ids', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    claimNip98AuthEventId.resolves('replay')
+
+    await adminAuthMiddleware(
+      mockRequest({
+        headers: { authorization: await createAuthHeader() },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
+  })
+
+  it('rejects NIP-98 when replay cache is unavailable', async () => {
+    enableNip98()
+    sandbox.stub(Date, 'now').returns(now * 1000)
+    claimNip98AuthEventId.resolves('unavailable')
+
+    await adminAuthMiddleware(
+      mockRequest({
+        headers: { authorization: await createAuthHeader() },
+      }),
+      response as any,
+      next,
+    )
+
+    expect(next).not.to.have.been.called
+    expect(response.status).to.have.been.calledWith(401)
   })
 
   it('rejects PATCH with a body when rawBody was not captured', async () => {
