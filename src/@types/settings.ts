@@ -1,5 +1,5 @@
-import { Pubkey, Secret } from './base'
 import { EventKinds } from '../constants/base'
+import { Pubkey, Secret } from './base'
 import { MessageType } from './messages'
 import { SubscriptionFilter } from './subscription'
 
@@ -246,6 +246,21 @@ export interface Mirroring {
   static?: Mirror[]
 }
 
+export interface DvmWorker {
+  /** Command to spawn for this worker (e.g. an interpreter or executable path). */
+  command: string
+  /** Arguments passed to the spawned command. */
+  args?: string[]
+  /** NIP-90 job request kinds (5000-5999) this worker accepts. */
+  kinds?: number[]
+  /** Max time in ms to wait for a job result before considering it timed out. */
+  timeoutMs?: number
+}
+
+export interface Dvm {
+  workers?: DvmWorker[]
+}
+
 export type Nip05Mode = 'enabled' | 'passive' | 'disabled'
 
 export interface Nip45Settings {
@@ -279,10 +294,20 @@ export interface Nip05Settings {
   domainBlacklist?: string[]
 }
 
+export interface AdminNip98Settings {
+  /** Accept NIP-98 Authorization headers on admin API routes. Defaults to false. */
+  enabled: boolean
+  /** Hex pubkeys allowed to authenticate via NIP-98. Fail-closed when empty. */
+  allowedPubkeys?: Pubkey[]
+  /** Max |now - created_at| in seconds. Defaults to 60. */
+  maxSkewSeconds?: number
+}
+
 export interface AdminSettings {
   enabled: boolean
   passwordHash?: string
   sessionTtlSeconds?: number
+  nip98?: AdminNip98Settings
 }
 export interface WoTSettings {
   enabled: boolean
@@ -330,6 +355,7 @@ export interface Settings {
   workers?: Worker
   limits?: Limits
   mirroring?: Mirroring
+  dvm?: Dvm
   nip05?: Nip05Settings
   nip42?: Nip42Settings
   nip43?: Nip43Settings

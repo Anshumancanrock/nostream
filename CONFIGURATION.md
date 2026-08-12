@@ -133,6 +133,13 @@ The settings below are listed in alphabetical order by name. Please keep this ta
 
 | Name                                        | Description                                                                   |
 |---------------------------------------------|-------------------------------------------------------------------------------|
+| admin.nip98.allowedPubkeys                  | Hex pubkeys allowed to use NIP-98 on the admin API. Empty means nobody (fail-closed). Defaults to []. |
+| admin.nip98.enabled                         | Accept `Authorization: Nostr` (NIP-98) on protected admin API routes alongside session auth. Defaults to false. Clients must sign `u` as `https://<info.relay_url-host><public-path-prefix>/admin/...` (scheme/host from `info.relay_url`, not the request Host). Successful auth events are one-time within `maxSkewSeconds` (Redis). |
+| admin.nip98.maxSkewSeconds                  | Max skew in seconds between now and the auth event `created_at`. Also the Redis TTL for one-time auth event ids. Defaults to 60. |
+| dvm.workers[].args                          | Arguments passed to the spawned command. Optional. |
+| dvm.workers[].command                       | Command to spawn for this DVM worker (e.g. an interpreter or executable path). |
+| dvm.workers[].kinds                         | NIP-90 job request kinds (5000-5999) this worker accepts. Optional. |
+| dvm.workers[].timeoutMs                     | Max time in ms to wait for a job result before considering it timed out. Optional. |
 | info.banner                                 | Public banner image URL for the relay information document. |
 | info.contact                                | Relay operator's contact. (e.g. mailto:operator@relay-your-domain.com) |
 | info.description                            | Public description of your relay. (e.g. Toronto Bitcoin Group Public Relay) |
