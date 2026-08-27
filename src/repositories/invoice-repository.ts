@@ -9,6 +9,32 @@ import { randomUUID } from 'crypto'
 
 const logger = createLogger('invoice-repository')
 
+/**
+ * `confirm_invoice` returns 1 when this call applied the confirmation and 0
+ * when the invoice had already been confirmed.
+ *
+ * Anything we cannot read as that scalar is reported as applied. Treating an
+ * unrecognized result as a replay would silently withhold admission from a
+ * user who has genuinely paid, which is far worse than repeating a side effect.
+ */
+const readConfirmInvoiceResult = (result: unknown): boolean => {
+  const row = (result as { rows?: unknown } | undefined)?.rows
+  if (!Array.isArray(row) || row.length === 0) {
+    return true
+  }
+
+  const value = (row[0] as Record<string, unknown> | undefined)?.confirm_invoice
+  if (typeof value === 'number') {
+    return value === 1
+  }
+
+  if (typeof value === 'string') {
+    return value.trim() === '1'
+  }
+
+  return true
+}
+
 export class InvoiceRepository implements IInvoiceRepository {
   public constructor(private readonly dbClient: DatabaseClient) {}
 
@@ -17,11 +43,22 @@ export class InvoiceRepository implements IInvoiceRepository {
     amountPaid: bigint,
     confirmedAt: Date,
     client: DatabaseClient = this.dbClient,
-  ): Promise<void> {
+  ): Promise<boolean> {
     logger('confirming invoice %s at %s: %s', invoiceId, confirmedAt, amountPaid)
 
     try {
-      await client.raw('select confirm_invoice(?, ?, ?)', [invoiceId, amountPaid.toString(), confirmedAt.toISOString()])
+      const result = await client.raw('select confirm_invoice(?, ?, ?)', [
+        invoiceId,
+        amountPaid.toString(),
+        confirmedAt.toISOString(),
+      ])
+
+      const applied = readConfirmInvoiceResult(result)
+      if (!applied) {
+        logger('invoice %s was already confirmed', invoiceId)
+      }
+
+      return applied
     } catch (error) {
       logger.error('Unable to confirm invoice. Reason:', error)
 

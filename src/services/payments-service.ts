@@ -146,12 +146,23 @@ export class PaymentsService implements IPaymentsService {
 
       await transaction.begin()
 
-      await this.invoiceRepository.confirmInvoice(
+      const applied = await this.invoiceRepository.confirmInvoice(
         invoice.id,
         invoice.amountPaid,
         invoice.confirmedAt,
         transaction.transaction,
       )
+
+      // Both entry points into this method can fire for the same payment: the
+      // payment processor callbacks and the maintenance worker's poll of
+      // pending invoices. `confirm_invoice` already ignores the duplicate, so
+      // anything downstream of the payment must be skipped too.
+      if (!applied) {
+        logger('invoice %s already confirmed, skipping admission', invoice.id)
+        await transaction.commit()
+
+        return
+      }
 
       const currentSettings = this.settings()
 

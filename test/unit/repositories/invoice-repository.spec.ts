@@ -85,6 +85,38 @@ describe('InvoiceRepository', () => {
         repository.confirmInvoice('invoice-123', 5000n, fixedDate, client),
       ).to.be.rejectedWith(dbError)
     })
+
+    it('returns true when confirm_invoice reports it applied the confirmation', async () => {
+      const client = {
+        raw: sandbox.stub().resolves({ rows: [{ confirm_invoice: 1 }] }),
+      } as unknown as DatabaseClient
+
+      await expect(repository.confirmInvoice('invoice-123', 5000n, fixedDate, client)).to.eventually.equal(true)
+    })
+
+    it('returns false when the invoice was already confirmed', async () => {
+      const client = {
+        raw: sandbox.stub().resolves({ rows: [{ confirm_invoice: 0 }] }),
+      } as unknown as DatabaseClient
+
+      await expect(repository.confirmInvoice('invoice-123', 5000n, fixedDate, client)).to.eventually.equal(false)
+    })
+
+    it('reads the result when the driver returns the count as a string', async () => {
+      const client = {
+        raw: sandbox.stub().resolves({ rows: [{ confirm_invoice: '0' }] }),
+      } as unknown as DatabaseClient
+
+      await expect(repository.confirmInvoice('invoice-123', 5000n, fixedDate, client)).to.eventually.equal(false)
+    })
+
+    it('reports applied when the result cannot be read', async () => {
+      // Withholding admission from a user who has genuinely paid is worse than
+      // repeating an idempotent side effect, so an unreadable result fails safe.
+      const client = { raw: sandbox.stub().resolves(undefined) } as unknown as DatabaseClient
+
+      await expect(repository.confirmInvoice('invoice-123', 5000n, fixedDate, client)).to.eventually.equal(true)
+    })
   })
 
   describe('.findById', () => {

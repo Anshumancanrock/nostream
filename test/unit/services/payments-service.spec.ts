@@ -64,7 +64,8 @@ describe('PaymentsService', () => {
       findPendingInvoices: sandbox.stub(),
       upsert: sandbox.stub().resolves(),
       updateStatus: sandbox.stub(),
-      confirmInvoice: sandbox.stub().resolves(),
+      // true = this call applied the confirmation (the first-confirmation case)
+      confirmInvoice: sandbox.stub().resolves(true),
     }
 
     eventRepository = {
@@ -422,6 +423,46 @@ describe('PaymentsService', () => {
       expect(userRepository.admitUser).to.have.been.calledOnce
     })
 
+
+    it('does not admit the user when the invoice was already confirmed', async () => {
+      // A replayed confirmation: confirm_invoice reports it changed nothing, so
+      // nothing downstream of the payment may run again.
+      settings.returns(makeSettings([{ enabled: true, amount: 1000n }]))
+      invoiceRepository.confirmInvoice.resolves(false)
+
+      await service.confirmInvoice(makeCompletedInvoice({
+        unit: InvoiceUnit.SATS,
+        amountPaid: 2n,
+      }))
+
+      expect(userRepository.admitUser).to.not.have.been.called
+    })
+
+    it('commits the transaction when the invoice was already confirmed', async () => {
+      settings.returns(makeSettings([{ enabled: true, amount: 1000n }]))
+      invoiceRepository.confirmInvoice.resolves(false)
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(mockTrx.commit).to.have.been.calledOnce
+      expect(mockTrx.rollback).to.not.have.been.called
+    })
+
+    it('admits the user only once across a duplicate confirmation', async () => {
+      // Payment processor callbacks and the maintenance worker poll can both
+      // confirm the same payment; only the first call applies it.
+      settings.returns(makeSettings([{ enabled: true, amount: 1000n }]))
+      const invoice = makeCompletedInvoice({ unit: InvoiceUnit.SATS, amountPaid: 2n })
+
+      invoiceRepository.confirmInvoice.onFirstCall().resolves(true)
+      invoiceRepository.confirmInvoice.onSecondCall().resolves(false)
+
+      await service.confirmInvoice(invoice)
+      await service.confirmInvoice(invoice)
+
+      expect(invoiceRepository.confirmInvoice).to.have.been.calledTwice
+      expect(userRepository.admitUser).to.have.been.calledOnce
+    })
 
     it('rolls back the transaction and re-throws on error', async () => {
       settings.returns(makeSettings([]))

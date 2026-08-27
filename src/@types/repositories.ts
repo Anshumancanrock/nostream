@@ -45,7 +45,13 @@ export interface IInvoiceRepository {
   findById(id: string, client?: DatabaseClient): Promise<Invoice | undefined>
   upsert(invoice: Partial<Invoice>, client?: DatabaseClient): Promise<number>
   updateStatus(invoice: Pick<Invoice, 'id' | 'status'>, client?: DatabaseClient): Promise<Invoice | undefined>
-  confirmInvoice(invoiceId: string, amountReceived: bigint, confirmedAt: Date, client?: DatabaseClient): Promise<void>
+  /** Resolves true when this call applied the confirmation, false when the invoice was already confirmed. */
+  confirmInvoice(
+    invoiceId: string,
+    amountReceived: bigint,
+    confirmedAt: Date,
+    client?: DatabaseClient,
+  ): Promise<boolean>
   findPendingInvoices(offset?: number, limit?: number, client?: DatabaseClient): Promise<Invoice[]>
 }
 
