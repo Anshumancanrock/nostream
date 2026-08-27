@@ -20,6 +20,7 @@ describe('PaymentsService', () => {
   let paymentsProcessor: any
   let userRepository: any
   let invoiceRepository: any
+  let userSubscriptionRepository: any
   let eventRepository: any
   let settings: Sinon.SinonStub
 
@@ -68,6 +69,11 @@ describe('PaymentsService', () => {
       confirmInvoice: sandbox.stub().resolves(true),
     }
 
+    userSubscriptionRepository = {
+      findByPubkey: sandbox.stub().resolves(undefined),
+      upsert: sandbox.stub().resolves(),
+    }
+
     eventRepository = {
       create: sandbox.stub().resolves(),
     }
@@ -103,6 +109,7 @@ describe('PaymentsService', () => {
       paymentsProcessor,
       userRepository,
       invoiceRepository,
+      userSubscriptionRepository,
       eventRepository,
       settings,
     )
@@ -273,10 +280,19 @@ describe('PaymentsService', () => {
         ...overrides,
       })
 
-    const makeSettings = (admissionFeeSchedules: any[] = []) => ({
+    const makeSettings = (admissionFeeSchedules: any[] = [], subscriptionPlans: any[] = []) => ({
       payments: {
         feeSchedules: { admission: admissionFeeSchedules },
+        subscriptionPlans,
       },
+    })
+
+    const makePlan = (overrides: any = {}) => ({
+      id: 'premium',
+      enabled: true,
+      amount: 1000n,
+      periodDays: 30,
+      ...overrides,
     })
 
     beforeEach(() => {
@@ -462,6 +478,83 @@ describe('PaymentsService', () => {
 
       expect(invoiceRepository.confirmInvoice).to.have.been.calledTwice
       expect(userRepository.admitUser).to.have.been.calledOnce
+    })
+
+    it('grants a subscription when the payment matches a plan', async () => {
+      settings.returns(makeSettings([], [makePlan()]))
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userSubscriptionRepository.upsert).to.have.been.calledOnce
+      const [granted] = userSubscriptionRepository.upsert.firstCall.args
+      expect(granted.planId).to.equal('premium')
+      expect(granted.pubkey).to.equal('pubkey1234')
+      expect(granted.lastInvoiceId).to.equal('invoice-id')
+      expect(granted.currentPeriodEnd.getTime()).to.be.greaterThan(granted.currentPeriodStart.getTime())
+    })
+
+    it('grants inside the confirming transaction', async () => {
+      settings.returns(makeSettings([], [makePlan()]))
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userSubscriptionRepository.upsert.firstCall.args[1]).to.equal(mockTrx)
+      expect(userSubscriptionRepository.findByPubkey.firstCall.args[1]).to.equal(mockTrx)
+    })
+
+    it('does not grant a subscription when no plans are configured', async () => {
+      settings.returns(makeSettings())
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userSubscriptionRepository.upsert).to.not.have.been.called
+    })
+
+    it('does not grant a subscription when the payment covers no plan', async () => {
+      // Paid 2000 msats against a 50000 msat plan.
+      settings.returns(makeSettings([], [makePlan({ amount: 50000n })]))
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userSubscriptionRepository.upsert).to.not.have.been.called
+    })
+
+    it('does not grant a second period for a replayed confirmation', async () => {
+      settings.returns(makeSettings([], [makePlan()]))
+      invoiceRepository.confirmInvoice.resolves(false)
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userSubscriptionRepository.upsert).to.not.have.been.called
+    })
+
+    it('grants a subscription even when no admission fee is charged', async () => {
+      // Admission and subscription are independent: a relay may run tiers
+      // without a one-time admission fee.
+      settings.returns(makeSettings([], [makePlan()]))
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      expect(userRepository.admitUser).to.not.have.been.called
+      expect(userSubscriptionRepository.upsert).to.have.been.calledOnce
+    })
+
+    it('stacks a renewal onto an unexpired period', async () => {
+      settings.returns(makeSettings([], [makePlan({ periodDays: 30 })]))
+      const currentPeriodEnd = new Date(Date.now() + 10 * 86400000)
+      userSubscriptionRepository.findByPubkey.resolves({
+        pubkey: 'pubkey1234',
+        planId: 'premium',
+        currentPeriodStart: new Date(),
+        currentPeriodEnd,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+
+      await service.confirmInvoice(makeCompletedInvoice())
+
+      const [granted] = userSubscriptionRepository.upsert.firstCall.args
+      expect(granted.currentPeriodStart.getTime()).to.equal(currentPeriodEnd.getTime())
     })
 
     it('rolls back the transaction and re-throws on error', async () => {

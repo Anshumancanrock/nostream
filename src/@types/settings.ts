@@ -179,10 +179,27 @@ export interface FeeSchedules {
   publication: FeeSchedule[]
 }
 
+export interface SubscriptionPlan {
+  /** Stable identifier stored against the subscriber. */
+  id: string
+  enabled: boolean
+  description?: string
+  /** Price of one billing period, in msats, matching FeeSchedule.amount. */
+  amount: bigint
+  /** Length of one billing period, in days. */
+  periodDays: number
+}
+
 export interface Payments {
   enabled: boolean
   processor: keyof PaymentsProcessors
   feeSchedules: FeeSchedules
+  /**
+   * Optional tiers. A confirmed payment is matched to the most expensive
+   * enabled plan it covers; leaving this empty keeps one-time admission
+   * behaviour unchanged.
+   */
+  subscriptionPlans?: SubscriptionPlan[]
 }
 
 export interface LnurlPaymentsProcessor {

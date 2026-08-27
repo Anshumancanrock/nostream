@@ -21,6 +21,16 @@ payments:
             - replace-with-your-pubkey-in-hex
           event_kinds:
             - 9735 # Nip-57 Lightning Zap Receipts
+  # Optional tiers. A confirmed payment is matched to the most expensive enabled
+  # plan its amount covers, and the subscriber is granted one billing period.
+  # Renewing the same plan before it lapses stacks onto the remaining time.
+  # Leave every plan disabled to keep one-time admission behaviour unchanged.
+  subscriptionPlans:
+    - id: premium
+      enabled: false
+      description: Premium tier billed per period in msats (1000 msats = 1 satoshi)
+      amount: 5000000
+      periodDays: 30
 paymentsProcessors:
   zebedee:
     baseURL: https://api.zebedee.io/

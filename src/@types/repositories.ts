@@ -9,6 +9,7 @@ import { Nip05Verification } from './nip05'
 import { EventKindsRange } from './settings'
 import { SubscriptionFilter } from './subscription'
 import { User } from './user'
+import { UserSubscription } from './user-subscription'
 
 export interface EventRetentionOptions {
   maxDays?: number
@@ -53,6 +54,14 @@ export interface IInvoiceRepository {
     client?: DatabaseClient,
   ): Promise<boolean>
   findPendingInvoices(offset?: number, limit?: number, client?: DatabaseClient): Promise<Invoice[]>
+}
+
+export interface IUserSubscriptionRepository {
+  findByPubkey(pubkey: Pubkey, client?: DatabaseClient): Promise<UserSubscription | undefined>
+  upsert(
+    subscription: Omit<UserSubscription, 'createdAt' | 'updatedAt'>,
+    client?: DatabaseClient,
+  ): Promise<UserSubscription>
 }
 
 export interface IUserRepository {

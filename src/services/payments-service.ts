@@ -2,7 +2,12 @@ import { andThen, otherwise, pipe } from 'ramda'
 import { broadcastEvent, getPublicKey, getRelayPrivateKey, identifyEvent, signEvent } from '../utils/event'
 import { DatabaseClient, Pubkey } from '../@types/base'
 import { FeeSchedule, Settings } from '../@types/settings'
-import { IEventRepository, IInvoiceRepository, IUserRepository } from '../@types/repositories'
+import {
+  IEventRepository,
+  IInvoiceRepository,
+  IUserRepository,
+  IUserSubscriptionRepository,
+} from '../@types/repositories'
 import { Invoice, InvoiceStatus, InvoiceUnit } from '../@types/invoice'
 
 import { Event, ExpiringEvent, UnidentifiedEvent } from '../@types/event'
@@ -11,6 +16,7 @@ import { createLogger } from '../factories/logger-factory'
 import { IPaymentsProcessor } from '../@types/clients'
 import { IPaymentsService } from '../@types/services'
 import { Transaction } from '../database/transaction'
+import { resolveNextPeriod, resolvePlanForAmount } from '../utils/subscription-plans'
 
 const logger = createLogger('payments-service')
 
@@ -20,6 +26,7 @@ export class PaymentsService implements IPaymentsService {
     private readonly paymentsProcessor: IPaymentsProcessor,
     private readonly userRepository: IUserRepository,
     private readonly invoiceRepository: IInvoiceRepository,
+    private readonly userSubscriptionRepository: IUserSubscriptionRepository,
     private readonly eventRepository: IEventRepository,
     private readonly settings: () => Settings,
   ) {}
@@ -186,6 +193,8 @@ export class PaymentsService implements IPaymentsService {
         await this.userRepository.admitUser(invoice.pubkey, date, transaction.transaction)
       }
 
+      await this.grantSubscription(invoice, amountPaidMsat, currentSettings, transaction.transaction)
+
       await transaction.commit()
     } catch (error) {
       logger.error('Unable to confirm invoice. Reason:', error)
@@ -193,6 +202,44 @@ export class PaymentsService implements IPaymentsService {
 
       throw error
     }
+  }
+
+  /**
+   * Record the billing period a confirmed payment bought.
+   *
+   * Runs in the confirming transaction, and only after `confirmInvoice`
+   * reported that it applied the confirmation, so a replayed payment
+   * notification cannot grant a second period. Relays with no plans configured
+   * are unaffected: `resolvePlanForAmount` returns undefined and nothing is
+   * written.
+   */
+  private async grantSubscription(
+    invoice: Invoice,
+    amountPaidMsat: bigint,
+    currentSettings: Settings,
+    client: DatabaseClient,
+  ): Promise<void> {
+    const plan = resolvePlanForAmount(currentSettings.payments?.subscriptionPlans, amountPaidMsat)
+
+    if (!plan) {
+      return
+    }
+
+    const existing = await this.userSubscriptionRepository.findByPubkey(invoice.pubkey, client)
+    const { start, end } = resolveNextPeriod(plan, existing, new Date())
+
+    await this.userSubscriptionRepository.upsert(
+      {
+        pubkey: invoice.pubkey,
+        planId: plan.id,
+        currentPeriodStart: start,
+        currentPeriodEnd: end,
+        lastInvoiceId: invoice.id,
+      },
+      client,
+    )
+
+    logger('invoice %s granted %s plan %s until %s', invoice.id, invoice.pubkey, plan.id, end.toISOString())
   }
 
   public async sendInvoiceUpdateNotification(invoice: Invoice): Promise<void> {
